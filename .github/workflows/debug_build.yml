@@ -12,6 +12,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -83,6 +84,36 @@ jobs:
             > "${APK_BASENAME_PREFIX}_sha256sums"); then
             exit_on_error "Generate sha25sums failed for '$APK_VERSION_TAG' release."
           fi
+
+      - name: Verify APK signatures against the official GitHub APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print -quit)"
+          test -n "$APKSIGNER"
+          certificate_digests() {
+            awk '/certificate SHA-256 digest:/ { print tolower($NF) }' "$1" | sort -u
+          }
+          OFFICIAL_APK="termux-app_v0.118.3+github-debug_arm64-v8a.apk"
+          curl --fail --location --retry 2 --output "$RUNNER_TEMP/$OFFICIAL_APK" \
+            "https://github.com/termux/termux-app/releases/download/v0.118.3/$OFFICIAL_APK"
+          printf '%s  %s\n' '72fdb596045116bf5ba1b5bdf5b26fddb9acc0bd074ad9f2da9eb0ae85e83a4e' "$RUNNER_TEMP/$OFFICIAL_APK" | sha256sum --check
+          "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/$OFFICIAL_APK" | tee "$APK_DIR_PATH/signature-official.txt"
+          certificate_digests "$APK_DIR_PATH/signature-official.txt" > "$RUNNER_TEMP/official-signer.txt"
+          test "$(wc -l < "$RUNNER_TEMP/official-signer.txt")" -eq 1
+          for apk in "$APK_DIR_PATH"/*.apk; do
+            report="$APK_DIR_PATH/signature-$(basename "$apk").txt"
+            "$APKSIGNER" verify --verbose --print-certs "$apk" | tee "$report"
+            certificate_digests "$report" > "$RUNNER_TEMP/fork-signer.txt"
+            test "$(wc -l < "$RUNNER_TEMP/fork-signer.txt")" -eq 1
+            cmp "$RUNNER_TEMP/official-signer.txt" "$RUNNER_TEMP/fork-signer.txt"
+          done
+
+      - name: Attach signature verification reports
+        uses: actions/upload-artifact@v6
+        with:
+          name: signatures-${{ matrix.package_variant }}
+          path: ${{ env.APK_DIR_PATH }}/signature-*.txt
 
       - name: Attach universal APK file
         uses: actions/upload-artifact@v6

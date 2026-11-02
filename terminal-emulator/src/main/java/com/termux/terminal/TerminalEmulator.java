@@ -34,11 +34,14 @@ public final class TerminalEmulator {
     private static final boolean LOG_ESCAPE_SEQUENCES = false;
 
     public static final int MOUSE_LEFT_BUTTON = 0;
+    public static final int MOUSE_RIGHT_BUTTON = 2;
 
     /** Mouse moving while having left mouse button pressed. */
     public static final int MOUSE_LEFT_BUTTON_MOVED = 32;
     public static final int MOUSE_WHEELUP_BUTTON = 64;
     public static final int MOUSE_WHEELDOWN_BUTTON = 65;
+    public static final int MOUSE_WHEELLEFT_BUTTON = 66;
+    public static final int MOUSE_WHEELRIGHT_BUTTON = 67;
 
     /** Used for invalid data - http://en.wikipedia.org/wiki/Replacement_character#Replacement_character */
     public static final int UNICODE_REPLACEMENT_CHAR = 0xFFFD;

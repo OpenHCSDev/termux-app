@@ -13,6 +13,7 @@ on:
 jobs:
   testing:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
     - name: Clone repository
       uses: actions/checkout@v6
@@ -24,3 +25,10 @@ jobs:
     - name: Execute tests
       run: |
         ./gradlew test
+    - name: Attach test results
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: unit-test-results
+        path: '**/build/test-results/**/*.xml'
+        if-no-files-found: warn

@@ -28,6 +28,9 @@ public interface TerminalViewClient {
      */
     void onSingleTapUp(MotionEvent e);
 
+    /** Request the client's soft keyboard, subject to its visibility and keyboard preferences. */
+    default void onRequestSoftKeyboard() { }
+
     boolean shouldBackButtonBeMappedToEscape();
 
     boolean shouldEnforceCharBasedInput();
@@ -45,6 +48,9 @@ public interface TerminalViewClient {
     boolean onKeyDown(int keyCode, KeyEvent e, TerminalSession session);
 
     boolean onKeyUp(int keyCode, KeyEvent e);
+
+    /** Keep text selection by default; clients may explicitly opt into tracked finger right-click. */
+    default boolean shouldSendRightClickOnLongPress() { return false; }
 
     boolean onLongPress(MotionEvent event);
 
