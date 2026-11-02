@@ -220,6 +220,17 @@ public final class TerminalEmulator {
 
     /** The cursor position. Between (0,0) and (mRows-1, mColumns-1). */
     private int mCursorRow, mCursorCol;
+    private TextInputRegion mTextInputRegion = TextInputRegion.EMPTY;
+    private long mInputContextGeneration;
+
+    public TextInputRegion getTextInputRegion() { return mTextInputRegion; }
+    public long getInputContextGeneration() { return mInputContextGeneration; }
+
+    /** Geometry and in-flight gestures belong to the current terminal input context. */
+    private void invalidateInputContext() {
+        mTextInputRegion = TextInputRegion.EMPTY;
+        mInputContextGeneration++;
+    }
 
     /** The number of character rows and columns in the terminal screen. */
     public int mRows, mColumns;
@@ -449,6 +460,9 @@ public final class TerminalEmulator {
     }
 
     private void setDecsetinternalBit(int internalBit, boolean set) {
+        if ((internalBit == DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE
+            || internalBit == DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT)
+            && isDecsetInternalBitSet(internalBit) != set) invalidateInputContext();
         if (set) {
             // The mouse modes are mutually exclusive.
             if (internalBit == DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE) {
@@ -584,6 +598,7 @@ public final class TerminalEmulator {
             throw new IllegalArgumentException("rows=" + rows + ", columns=" + columns);
         }
 
+        invalidateInputContext();
         if (mRows != rows) {
             mRows = rows;
             mTopMargin = 0;
@@ -1858,6 +1873,7 @@ public final class TerminalEmulator {
                 // Reset: Use Normal Screen Buffer and restore cursor as in DECRC.
                 TerminalBuffer newScreen = setting ? mAltBuffer : mMainBuffer;
                 if (newScreen != mScreen) {
+                    invalidateInputContext();
                     boolean resized = !(newScreen.mColumns == mColumns && newScreen.mScreenRows == mRows);
                     if (setting) saveCursor();
                     mScreen = newScreen;
@@ -2894,6 +2910,14 @@ public final class TerminalEmulator {
                 break;
             case 119: // Reset highlight color.
                 break;
+            case 777: // Application-declared text-input bounds, never inferred from the cursor.
+                mTextInputRegion = TextInputRegion.EMPTY;
+                try {
+                    mTextInputRegion = TextInputRegion.fromOsc(textParameter, mColumns, mRows);
+                } catch (IllegalArgumentException error) {
+                    Logger.logError(mClient, LOG_TAG, "Invalid OSC 777 input region: " + error.getMessage());
+                }
+                break;
             case 1337: // iTerm image
                 // - https://iterm2.com/documentation-images.html
                 // - https://iterm2.com/documentation-escape-codes.html
@@ -3487,6 +3511,7 @@ public final class TerminalEmulator {
 
     /** Reset terminal state so user can interact with it regardless of present state. */
     public void reset() {
+        invalidateInputContext();
         setCursorStyle();
         mArgIndex = 0;
         mContinueSequence = false;

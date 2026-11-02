@@ -78,11 +78,16 @@ public final class TerminalView extends View {
     /** Keep track of the time when a touch event leading to sending mouse scroll events started. */
     private long mMouseStartDownTime = -1;
 
-    /** A remote cursor response may request the keyboard once after a finger tap. */
+    /** Explicit input bounds may acknowledge one recent finger tap. */
     static final long MOUSE_TAP_KEYBOARD_TIMEOUT_MILLIS = 3000;
-    private long mMouseTapKeyboardDeadline;
+    private final KeyboardTapState mNoKeyboardTap = new KeyboardTapState();
+    private KeyboardTapState mKeyboardTap = mNoKeyboardTap;
 
     final Scroller mScroller;
+    private final FlingState mNoFling = new FlingState();
+    private FlingState mFling = mNoFling;
+    private static final float FLING_VELOCITY_SCALE = 0.25f;
+    static final int MAX_MOUSE_FLING_MILLIS = 500;
 
     /** What was left in from scrolling movement. */
     float mScrollRemainder;
@@ -137,12 +142,149 @@ public final class TerminalView extends View {
 
     private static final String LOG_TAG = "TerminalView";
 
+    private class KeyboardTapState {
+        void screenUpdated() { }
+    }
+
+    private final class PendingKeyboardTap extends KeyboardTapState {
+        private final int column, row;
+        private final long deadline, generation;
+
+        PendingKeyboardTap(MotionEvent event) {
+            int[] cell = getColumnAndRow(event, false);
+            column = cell[0];
+            row = cell[1];
+            generation = mEmulator.getInputContextGeneration();
+            deadline = SystemClock.uptimeMillis() + MOUSE_TAP_KEYBOARD_TIMEOUT_MILLIS;
+        }
+
+        @Override void screenUpdated() {
+            if (!mEmulator.isMouseTrackingActive() || isSelectingText()
+                || mEmulator.getInputContextGeneration() != generation
+                || SystemClock.uptimeMillis() >= deadline) {
+                mKeyboardTap = mNoKeyboardTap;
+            } else if (mEmulator.getTextInputRegion().contains(column, row)) {
+                mKeyboardTap = mNoKeyboardTap;
+                mClient.onRequestSoftKeyboard();
+            }
+        }
+    }
+
+    private enum ScrollAxis {
+        VERTICAL {
+            @Override float component(float x, float y) { return y; }
+            @Override float cellSize(TerminalRenderer renderer) { return renderer.mFontLineSpacing; }
+            @Override int cells(TerminalEmulator emulator) { return emulator.mRows; }
+            @Override void scroll(TerminalView view, MotionEvent event, int steps) {
+                view.doScroll(event, steps);
+            }
+            @Override ScrollAxis forTracking(boolean tracking) { return this; }
+        },
+        HORIZONTAL {
+            @Override float component(float x, float y) { return x; }
+            @Override float cellSize(TerminalRenderer renderer) { return renderer.mFontWidth; }
+            @Override int cells(TerminalEmulator emulator) { return emulator.mColumns; }
+            @Override void scroll(TerminalView view, MotionEvent event, int steps) {
+                view.doMouseScroll(event, steps, TerminalEmulator.MOUSE_WHEELLEFT_BUTTON,
+                    TerminalEmulator.MOUSE_WHEELRIGHT_BUTTON);
+            }
+            @Override ScrollAxis forTracking(boolean tracking) { return tracking ? this : VERTICAL; }
+        };
+
+        abstract float component(float x, float y);
+        abstract float cellSize(TerminalRenderer renderer);
+        abstract int cells(TerminalEmulator emulator);
+        abstract void scroll(TerminalView view, MotionEvent event, int steps);
+        abstract ScrollAxis forTracking(boolean tracking);
+    }
+
+    private class FlingState {
+        void stop() { }
+    }
+
+    /** One owner of frame pacing, the copied gesture and its session/mode lifetime. */
+    private abstract class ActiveFling extends FlingState implements Runnable {
+        final TerminalEmulator emulator = mEmulator;
+        final long generation = emulator.getInputContextGeneration();
+        final MotionEvent event;
+
+        ActiveFling(MotionEvent source) { event = MotionEvent.obtain(source); }
+
+        final void start() {
+            mFling = this;
+            postOnAnimation(this);
+        }
+
+        abstract boolean tracksMouse();
+        abstract void scrollTo(int position);
+
+        @Override final void stop() {
+            if (mFling != this) return;
+            removeCallbacks(this);
+            mScroller.abortAnimation();
+            event.recycle();
+            mFling = mNoFling;
+        }
+
+        @Override public final void run() {
+            if (mFling != this) return;
+            if (mEmulator != emulator || emulator.getInputContextGeneration() != generation
+                || emulator.isMouseTrackingActive() != tracksMouse()
+                || isSelectingText() || mScroller.isFinished()) {
+                stop();
+                return;
+            }
+            boolean more = mScroller.computeScrollOffset();
+            scrollTo(mScroller.getCurrY());
+            if (more && !mScroller.isFinished()) postOnAnimation(this);
+            else stop();
+        }
+    }
+
+    private final class ScrollbackFling extends ActiveFling {
+        ScrollbackFling(MotionEvent event, float velocityY) {
+            super(event);
+            mScroller.fling(0, mTopRow, 0, -(int) (velocityY * FLING_VELOCITY_SCALE),
+                0, 0, -emulator.getScreen().getActiveTranscriptRows(), 0);
+        }
+        @Override boolean tracksMouse() { return false; }
+        @Override void scrollTo(int row) { doScroll(event, row - mTopRow); }
+    }
+
+    private final class MouseFling extends ActiveFling {
+        private final ScrollAxis axis;
+        private final float cellSize;
+        private int steps;
+
+        MouseFling(MotionEvent event, ScrollAxis axis, float velocityX, float velocityY) {
+            super(event);
+            this.axis = axis;
+            cellSize = axis.cellSize(mRenderer);
+            // Scroller's physics are pixels, not terminal rows. Bound the additional
+            // wheel reports to one viewport and emit only each newly crossed cell.
+            int extent = Math.max(1, Math.round(cellSize * axis.cells(emulator)));
+            mScroller.fling(0, 0, 0, -(int) (axis.component(velocityX, velocityY) * FLING_VELOCITY_SCALE),
+                0, 0, -extent, extent);
+            mScroller.extendDuration(Math.max(1,
+                Math.min(mScroller.getDuration(), MAX_MOUSE_FLING_MILLIS) - mScroller.timePassed()));
+        }
+        @Override boolean tracksMouse() { return true; }
+        @Override void scrollTo(int pixels) {
+            int current = (int) (pixels / cellSize);
+            // At most one wheel report per display frame: no burst/backlog to flush
+            // after the bounded animation settles or another touch cancels it.
+            int delta = Math.max(-1, Math.min(1, current - steps));
+            axis.scroll(TerminalView.this, event, delta);
+            steps += delta;
+        }
+    }
+
     public TerminalView(Context context, AttributeSet attributes) { // NO_UCD (unused code)
         super(context, attributes);
         mGestureRecognizer = new GestureAndScaleRecognizer(context, new GestureAndScaleRecognizer.Listener() {
 
             boolean scrolledWithFinger;
-            boolean scrolledHorizontally;
+            ScrollAxis axis = ScrollAxis.VERTICAL;
 
             @Override
             public boolean onUp(MotionEvent event) {
@@ -151,13 +293,14 @@ public final class TerminalView extends View {
                     // Quick event processing when mouse tracking is active - do not wait for check of double tapping
                     // for zooming.
                     requestFocus();
-                    mMouseTapKeyboardDeadline = SystemClock.uptimeMillis() + MOUSE_TAP_KEYBOARD_TIMEOUT_MILLIS;
+                    mKeyboardTap = new PendingKeyboardTap(event);
                     sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, true);
                     sendMouseEventCode(event, TerminalEmulator.MOUSE_LEFT_BUTTON, false);
+                    mKeyboardTap.screenUpdated();
                     return true;
                 }
                 scrolledWithFinger = false;
-                scrolledHorizontally = false;
+                axis = ScrollAxis.VERTICAL;
                 return false;
             }
 
@@ -186,23 +329,20 @@ public final class TerminalView extends View {
                 } else {
                     if (!scrolledWithFinger) {
                         // Lock the axis at the first scroll, after GestureDetector's touch slop.
-                        scrolledHorizontally = mEmulator.isMouseTrackingActive() && !isSelectingText()
-                            && Math.abs(distanceX) > Math.abs(distanceY);
+                        axis = mEmulator.isMouseTrackingActive() && !isSelectingText()
+                            && Math.abs(distanceX) > Math.abs(distanceY) ? ScrollAxis.HORIZONTAL : ScrollAxis.VERTICAL;
                     }
                     scrolledWithFinger = true;
-                    if (scrolledHorizontally && !mEmulator.isMouseTrackingActive()) {
-                        scrolledHorizontally = false;
+                    ScrollAxis current = axis.forTracking(mEmulator.isMouseTrackingActive());
+                    if (current != axis) {
+                        axis = current;
                         mScrollRemainder = 0.0f;
                     }
-                    float cellSize = scrolledHorizontally ? mRenderer.mFontWidth : mRenderer.mFontLineSpacing;
-                    float distance = (scrolledHorizontally ? distanceX : distanceY) + mScrollRemainder;
+                    float cellSize = axis.cellSize(mRenderer);
+                    float distance = axis.component(distanceX, distanceY) + mScrollRemainder;
                     int delta = (int) (distance / cellSize);
                     mScrollRemainder = distance - delta * cellSize;
-                    if (scrolledHorizontally) {
-                        doMouseScroll(e, delta, TerminalEmulator.MOUSE_WHEELLEFT_BUTTON, TerminalEmulator.MOUSE_WHEELRIGHT_BUTTON);
-                    } else {
-                        doScroll(e, delta);
-                    }
+                    axis.scroll(TerminalView.this, e, delta);
                 }
                 return true;
             }
@@ -210,6 +350,7 @@ public final class TerminalView extends View {
             @Override
             public boolean onScale(float focusX, float focusY, float scale) {
                 if (mEmulator == null || isSelectingText()) return true;
+                mFling.stop();
                 mScaleFactor *= scale;
                 mScaleFactor = mClient.onScale(mScaleFactor);
                 return true;
@@ -217,29 +358,11 @@ public final class TerminalView extends View {
 
             @Override
             public boolean onFling(final MotionEvent e2, float velocityX, float velocityY) {
-                // Tracked applications already received every gesture row; do not invent wheel
-                // reports after release. Preserve kinetic scrolling when tracking is off.
-                if (mEmulator == null || scrolledHorizontally || mEmulator.isMouseTrackingActive()) return true;
-                // Do not start scrolling until last fling has been taken care of:
-                if (!mScroller.isFinished()) return true;
-
-                float SCALE = 0.25f;
-                mScroller.fling(0, mTopRow, 0, -(int) (velocityY * SCALE), 0, 0, -mEmulator.getScreen().getActiveTranscriptRows(), 0);
-
-                post(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (mEmulator == null || mEmulator.isMouseTrackingActive()) {
-                            mScroller.abortAnimation();
-                            return;
-                        }
-                        if (mScroller.isFinished()) return;
-                        boolean more = mScroller.computeScrollOffset();
-                        int newY = mScroller.getCurrY();
-                        doScroll(e2, newY - mTopRow);
-                        if (more) post(this);
-                    }
-                });
+                if (mEmulator == null || isSelectingText() || e2.isFromSource(InputDevice.SOURCE_MOUSE)) return true;
+                mFling.stop();
+                ActiveFling fling = mEmulator.isMouseTrackingActive()
+                    ? new MouseFling(e2, axis, velocityX, velocityY) : new ScrollbackFling(e2, velocityY);
+                fling.start();
 
                 return true;
             }
@@ -249,7 +372,7 @@ public final class TerminalView extends View {
                 // Also reset after a cancelled gesture or a long press, which skips onUp().
                 mScrollRemainder = 0.0f;
                 scrolledWithFinger = false;
-                scrolledHorizontally = false;
+                axis = ScrollAxis.VERTICAL;
                 // Why is true not returned here?
                 // https://developer.android.com/training/gestures/detector.html#detect-a-subset-of-supported-gestures
                 // Although setting this to true still does not solve the following errors when long pressing in terminal view text area
@@ -316,7 +439,8 @@ public final class TerminalView extends View {
     public boolean attachSession(TerminalSession session) {
         if (session == mTermSession) return false;
 
-        mMouseTapKeyboardDeadline = 0;
+        mKeyboardTap = mNoKeyboardTap;
+        mFling.stop();
         mTermSession = session;
         mEmulator = null;
         mCombiningAccent = 0;
@@ -486,14 +610,9 @@ public final class TerminalView extends View {
     public void onScreenUpdated(boolean skipScrolling) {
         if (mEmulator == null) return;
 
-        // Read only this view's emulator: the shared cursor callback has no session identity.
-        // Use DECTCEM, not the cursor's local animation phase, and consume before showing IME.
-        if (!mEmulator.isMouseTrackingActive() || isSelectingText()) {
-            mMouseTapKeyboardDeadline = 0;
-        } else if (mMouseTapKeyboardDeadline > SystemClock.uptimeMillis() && mEmulator.isCursorEnabled()) {
-            mMouseTapKeyboardDeadline = 0;
-            mClient.onRequestSoftKeyboard();
-        }
+        // Only bounds declared by this session's application can acknowledge the
+        // tapped input. A cursor repaint carries neither widget identity nor bounds.
+        mKeyboardTap.screenUpdated();
 
         int rowsInHistory = mEmulator.getScreen().getActiveTranscriptRows();
         if (mTopRow < -rowsInHistory) setTopRow(-rowsInHistory);
@@ -655,7 +774,8 @@ public final class TerminalView extends View {
         final int action = event.getAction();
         if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_CANCEL
             || event.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN) {
-            mMouseTapKeyboardDeadline = 0;
+            mKeyboardTap = mNoKeyboardTap;
+            mFling.stop();
         }
 
         if (isSelectingText()) {
@@ -695,7 +815,10 @@ public final class TerminalView extends View {
 
     @Override
     public void onWindowFocusChanged(boolean hasWindowFocus) {
-        if (!hasWindowFocus) mMouseTapKeyboardDeadline = 0;
+        if (!hasWindowFocus) {
+            mKeyboardTap = mNoKeyboardTap;
+            mFling.stop();
+        }
         super.onWindowFocusChanged(hasWindowFocus);
     }
 
@@ -1483,6 +1606,8 @@ public final class TerminalView extends View {
     }
 
     public void startTextSelectionMode(MotionEvent event) {
+        mKeyboardTap = mNoKeyboardTap;
+        mFling.stop();
         if (!requestFocus()) {
             return;
         }
@@ -1517,7 +1642,8 @@ public final class TerminalView extends View {
 
     @Override
     protected void onDetachedFromWindow() {
-        mMouseTapKeyboardDeadline = 0;
+        mKeyboardTap = mNoKeyboardTap;
+        mFling.stop();
         super.onDetachedFromWindow();
 
         if (mTextSelectionCursorController != null) {

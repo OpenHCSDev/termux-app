@@ -65,35 +65,106 @@ public class TerminalViewMouseTest extends TerminalViewTestCase {
         assertEquals("\033[<32;3;4M", output.text());
     }
 
+    private void fling(float velocityX, float velocityY) {
+        MotionEvent up = event(1, MotionEvent.ACTION_UP, 2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
+        view.mGestureRecognizer.mListener.onFling(up, velocityX, velocityY);
+        // Android owns/recycles the source event; the continuation owns its copy.
+        up.setLocation(1000, 1000);
+        up.recycle();
+    }
+
     @Test
-    public void horizontalGestureDoesNotStartVerticalFling() {
+    public void horizontalReleaseGlidesOnItsLockedAxis() {
         input("\033[?1000h\033[?1006h");
         scroll(2, 0);
-        MotionEvent event = event(1, MotionEvent.ACTION_UP, 2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
-        view.mGestureRecognizer.mListener.onFling(event, -1000, 2000);
-        event.recycle();
+        String initial = output.text();
+        fling(-20000, 20000);
+        assertFalse(view.mScroller.isFinished());
+        assertEquals(initial, output.text());
+        advance(TerminalView.MAX_MOUSE_FLING_MILLIS + 32);
+        String continuation = output.text().substring(initial.length());
+        String report = "\033[<67;3;4M";
+        assertFalse(continuation.isEmpty());
+        assertEquals("", continuation.replace(report, ""));
+        assertTrue(continuation.length() / report.length() <= view.mEmulator.mColumns);
         assertTrue(view.mScroller.isFinished());
-        assertEquals("\033[<67;3;4M\033[<67;3;4M", output.text());
     }
 
-    private void assertTrackedVerticalReleaseStops(int mode) {
+    private void assertTrackedVerticalMomentum(int mode) {
         input("\033[?" + mode + "h\033[?1006h");
         scroll(0, 2);
-        String actualRows = "\033[<65;3;4M\033[<65;3;4M";
-        assertEquals(actualRows, output.text());
-        MotionEvent up = event(1, MotionEvent.ACTION_UP, 2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
-        view.mGestureRecognizer.mListener.onFling(up, 0, -2000);
-        up.recycle();
+        String initial = "\033[<65;3;4M\033[<65;3;4M";
+        assertEquals(initial, output.text());
+        fling(0, -20000);
+        assertFalse(view.mScroller.isFinished());
+        assertEquals(initial, output.text());
+        advance(TerminalView.MAX_MOUSE_FLING_MILLIS + 32);
+        String continuation = output.text().substring(initial.length());
+        String report = "\033[<65;3;4M";
+        assertFalse(continuation.isEmpty());
+        assertEquals("", continuation.replace(report, ""));
+        assertTrue(continuation.length() / report.length() <= view.mEmulator.mRows);
         assertTrue(view.mScroller.isFinished());
+        String settled = output.text();
         advance(1000);
-        assertEquals(actualRows, output.text());
+        assertEquals(settled, output.text());
     }
 
     @Test
-    public void tracked1000VerticalReleaseDoesNotAddWheelRows() { assertTrackedVerticalReleaseStops(1000); }
+    public void tracked1000VerticalReleaseHasBoundedMomentum() { assertTrackedVerticalMomentum(1000); }
 
     @Test
-    public void tracked1002VerticalReleaseDoesNotAddWheelRows() { assertTrackedVerticalReleaseStops(1002); }
+    public void tracked1002VerticalReleaseHasBoundedMomentum() { assertTrackedVerticalMomentum(1002); }
+
+    @Test
+    public void newDownStopsMomentumBeforeAnotherWheelReport() {
+        input("\033[?1000h\033[?1006h");
+        fling(0, -20000);
+        touch(SystemClock.uptimeMillis(), MotionEvent.ACTION_DOWN, 2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
+        advance(1000);
+        assertTrue(view.mScroller.isFinished());
+        assertEquals("", output.text());
+    }
+
+    @Test
+    public void cancellationStopsMomentumBeforeAnotherWheelReport() {
+        input("\033[?1000h\033[?1006h");
+        fling(0, -20000);
+        touch(SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, 2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
+        advance(1000);
+        assertTrue(view.mScroller.isFinished());
+        assertEquals("", output.text());
+    }
+
+    @Test
+    public void trackingRoundTripInOneReadRetiresOldMomentum() {
+        input("\033[?1000h\033[?1006h");
+        fling(0, -20000);
+        input("\033[?1000l\033[?1000h");
+        advance(1000);
+        assertTrue(view.mScroller.isFinished());
+        assertEquals("", output.text());
+    }
+
+    @Test
+    public void bufferSwitchRetiresOldMomentum() {
+        input("\033[?1000h\033[?1006h");
+        fling(0, -20000);
+        input("\033[?1049h");
+        advance(1000);
+        assertTrue(view.mScroller.isFinished());
+        assertEquals("", output.text());
+    }
+
+    @Test
+    public void resizeRetiresOldMomentum() {
+        input("\033[?1000h\033[?1006h");
+        fling(0, -20000);
+        view.mEmulator.resize(81, 24, 8, 16);
+        advance(1000);
+        assertTrue(view.mScroller.isFinished());
+        assertEquals("", output.text());
+    }
 
     private void prepareScrollback() {
         for (int i = 0; i < 60; i++) input("row\r\n");
@@ -107,11 +178,11 @@ public class TerminalViewMouseTest extends TerminalViewTestCase {
         MotionEvent up = event(1, MotionEvent.ACTION_UP, 2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
         view.mGestureRecognizer.mListener.onFling(up, 0, 2000);
         up.recycle();
-        try {
-            assertFalse(view.mScroller.isFinished());
-        } finally {
-            view.mScroller.abortAnimation();
-        }
+        assertFalse(view.mScroller.isFinished());
+        advance(1000);
+        assertTrue(view.mScroller.isFinished());
+        assertTrue(view.getTopRow() < 0);
+        assertEquals("", output.text());
     }
 
     @Test
@@ -121,7 +192,7 @@ public class TerminalViewMouseTest extends TerminalViewTestCase {
         view.mGestureRecognizer.mListener.onFling(up, 0, 2000);
         up.recycle();
         input("\033[?1000h\033[?1006h");
-        advance(1);
+        advance(32);
         assertTrue(view.mScroller.isFinished());
         assertEquals("", output.text());
     }
