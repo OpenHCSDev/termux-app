@@ -48,16 +48,21 @@ public abstract class TerminalViewTestCase {
     public void setUp() throws Exception {
         activity = Robolectric.buildActivity(Activity.class).setup().visible();
         // Use the actual app attributes: a null AttributeSet loses focusability and selection.
+        StringBuilder declaredIds = new StringBuilder();
         try (XmlResourceParser layout = activity.get().getResources().getLayout(R.layout.activity_termux)) {
             while (layout.next() != XmlPullParser.END_DOCUMENT) {
                 if (layout.getEventType() == XmlPullParser.START_TAG
-                    && layout.getIdAttributeResourceValue(0) == R.id.terminal_view) {
-                    view = new TerminalView(activity.get(), layout);
-                    break;
+                    && TerminalView.class.getName().equals(layout.getName())) {
+                    TerminalView declared = new TerminalView(activity.get(), layout);
+                    declaredIds.append(declared.getId()).append(' ');
+                    if (declared.getId() == R.id.terminal_view) {
+                        view = declared;
+                        break;
+                    }
                 }
             }
         }
-        assertNotNull("The app layout must declare the terminal view", view);
+        assertNotNull("Expected terminal id " + R.id.terminal_view + "; decoded ids: " + declaredIds, view);
         assertTrue("Native selection requires the app's touch focusability", view.isFocusableInTouchMode());
         view.setTerminalViewClient(client);
         view.setTextSize(16);
@@ -71,6 +76,7 @@ public abstract class TerminalViewTestCase {
 
     @After
     public void tearDown() {
+        if (view != null) view.mScroller.abortAnimation();
         activity.pause().stop().destroy();
     }
 

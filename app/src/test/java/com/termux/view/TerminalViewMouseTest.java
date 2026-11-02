@@ -76,6 +76,56 @@ public class TerminalViewMouseTest extends TerminalViewTestCase {
         assertEquals("\033[<67;3;4M\033[<67;3;4M", output.text());
     }
 
+    private void assertTrackedVerticalReleaseStops(int mode) {
+        input("\033[?" + mode + "h\033[?1006h");
+        scroll(0, 2);
+        String actualRows = "\033[<65;3;4M\033[<65;3;4M";
+        assertEquals(actualRows, output.text());
+        MotionEvent up = event(1, MotionEvent.ACTION_UP, 2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
+        view.mGestureRecognizer.mListener.onFling(up, 0, -2000);
+        up.recycle();
+        assertTrue(view.mScroller.isFinished());
+        advance(1000);
+        assertEquals(actualRows, output.text());
+    }
+
+    @Test
+    public void tracked1000VerticalReleaseDoesNotAddWheelRows() { assertTrackedVerticalReleaseStops(1000); }
+
+    @Test
+    public void tracked1002VerticalReleaseDoesNotAddWheelRows() { assertTrackedVerticalReleaseStops(1002); }
+
+    private void prepareScrollback() {
+        for (int i = 0; i < 60; i++) input("row\r\n");
+        view.onScreenUpdated();
+        assertTrue(view.mEmulator.getScreen().getActiveTranscriptRows() > 0);
+    }
+
+    @Test
+    public void trackingOffScrollbackStillStartsFling() {
+        prepareScrollback();
+        MotionEvent up = event(1, MotionEvent.ACTION_UP, 2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
+        view.mGestureRecognizer.mListener.onFling(up, 0, 2000);
+        up.recycle();
+        try {
+            assertFalse(view.mScroller.isFinished());
+        } finally {
+            view.mScroller.abortAnimation();
+        }
+    }
+
+    @Test
+    public void enablingTrackingAbortsAnUntrackedFlingWithoutWheelReports() {
+        prepareScrollback();
+        MotionEvent up = event(1, MotionEvent.ACTION_UP, 2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
+        view.mGestureRecognizer.mListener.onFling(up, 0, 2000);
+        up.recycle();
+        input("\033[?1000h\033[?1006h");
+        advance(1);
+        assertTrue(view.mScroller.isFinished());
+        assertEquals("", output.text());
+    }
+
     @Test
     public void nextDownClearsCancelledGestureFractionAndAxis() {
         input("\033[?1000h\033[?1006h");
