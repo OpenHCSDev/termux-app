@@ -1,9 +1,11 @@
 package com.termux.view;
 
 import android.app.Application;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.view.InputDevice;
 import android.view.MotionEvent;
+import android.view.ViewConfiguration;
 
 import com.termux.shared.termux.terminal.TermuxTerminalSessionClientBase;
 import com.termux.shared.termux.terminal.TermuxTerminalViewClientBase;
@@ -16,22 +18,27 @@ import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
+import org.robolectric.annotation.LooperMode;
+import org.robolectric.Shadows;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 28, manifest = Config.NONE, application = Application.class)
+@LooperMode(LooperMode.Mode.PAUSED)
 public class TerminalViewMouseTest {
     private final RecordingOutput output = new RecordingOutput();
+    private final RecordingClient client = new RecordingClient();
     private TerminalView view;
 
     @Before
     public void setUp() {
         view = new TerminalView(RuntimeEnvironment.getApplication(), null);
-        view.setTerminalViewClient(new TermuxTerminalViewClientBase());
+        view.setTerminalViewClient(client);
         view.setTextSize(16);
         view.mEmulator = new TerminalEmulator(output, 80, 24, 8, 16, null,
             new TermuxTerminalSessionClientBase());
@@ -55,6 +62,19 @@ public class TerminalViewMouseTest {
         MotionEvent event = event(1, MotionEvent.ACTION_MOVE, 2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
         view.mGestureRecognizer.mListener.onScroll(event,
             columns * view.mRenderer.mFontWidth, rows * view.mRenderer.mFontLineSpacing);
+        event.recycle();
+    }
+
+    private void longPress(int source) {
+        long down = SystemClock.uptimeMillis();
+        MotionEvent event = event(down, MotionEvent.ACTION_DOWN, 2.5f, 3.5f, source);
+        view.onTouchEvent(event);
+        event.recycle();
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(
+            ViewConfiguration.getTapTimeout() + ViewConfiguration.getLongPressTimeout() + 1,
+            TimeUnit.MILLISECONDS);
+        event = event(down, MotionEvent.ACTION_UP, 2.5f, 3.5f, source);
+        view.onTouchEvent(event);
         event.recycle();
     }
 
@@ -145,6 +165,47 @@ public class TerminalViewMouseTest {
         assertFalse(output.text().contains("\033[<64;"));
         assertFalse(output.text().contains("\033[<65;"));
         assertTrue(output.text().contains("\033[<67;"));
+    }
+
+    @Test
+    public void sgrLongPressReportsRightPressAndReleaseWithoutLeftTap() {
+        input("\033[?1000h\033[?1006h");
+        longPress(InputDevice.SOURCE_TOUCHSCREEN);
+        assertEquals("\033[<2;3;4M\033[<2;3;4m", output.text());
+        assertEquals(0, client.longPresses);
+        assertEquals(0, client.taps);
+        assertFalse(view.isSelectingText());
+    }
+
+    @Test
+    public void legacyLongPressUsesExistingReleaseEncoding() {
+        input("\033[?1002h");
+        longPress(InputDevice.SOURCE_TOUCHSCREEN);
+        assertEquals("\033[M\"#$\033[M##$", output.text());
+        assertEquals(0, client.longPresses);
+    }
+
+    @Test
+    public void trackingOffKeepsClientLongPressAndDoesNotEmitMouseInput() {
+        longPress(InputDevice.SOURCE_TOUCHSCREEN);
+        assertEquals("", output.text());
+        assertEquals(1, client.longPresses);
+        assertEquals(0, client.taps);
+    }
+
+    @Test
+    public void mouseDeviceLongPressKeepsClientCallbackAndLeftButtonPath() {
+        input("\033[?1000h\033[?1006h");
+        longPress(InputDevice.SOURCE_MOUSE);
+        assertEquals("\033[<0;3;4M\033[<0;3;4m", output.text());
+        assertEquals(1, client.longPresses);
+    }
+
+    private static final class RecordingClient extends TermuxTerminalViewClientBase {
+        int longPresses;
+        int taps;
+        @Override public boolean onLongPress(MotionEvent event) { longPresses++; return true; }
+        @Override public void onSingleTapUp(MotionEvent event) { taps++; }
     }
 
     private static final class RecordingOutput extends TerminalOutput {
