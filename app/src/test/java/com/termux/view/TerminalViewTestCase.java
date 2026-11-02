@@ -95,14 +95,18 @@ public abstract class TerminalViewTestCase {
 
     protected void touch(long down, int action, float column, float row, int source) {
         MotionEvent event = event(down, action, column, row, source);
-        view.onTouchEvent(event);
+        view.dispatchTouchEvent(event);
         event.recycle();
     }
 
     protected void tap(int source) {
+        tapAt(2.5f, 3.5f, source);
+    }
+
+    protected void tapAt(float column, float row, int source) {
         long down = SystemClock.uptimeMillis();
-        touch(down, MotionEvent.ACTION_DOWN, 2.5f, 3.5f, source);
-        touch(down, MotionEvent.ACTION_UP, 2.5f, 3.5f, source);
+        touch(down, MotionEvent.ACTION_DOWN, column, row, source);
+        touch(down, MotionEvent.ACTION_UP, column, row, source);
     }
 
     protected void longPress(int source) {
