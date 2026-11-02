@@ -95,7 +95,7 @@ public abstract class TerminalViewTestCase {
 
     protected void touch(long down, int action, float column, float row, int source) {
         MotionEvent event = event(down, action, column, row, source);
-        view.onTouchEvent(event);
+        view.dispatchTouchEvent(event);
         event.recycle();
     }
 

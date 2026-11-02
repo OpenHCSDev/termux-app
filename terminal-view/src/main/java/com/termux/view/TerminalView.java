@@ -606,7 +606,7 @@ public final class TerminalView extends View {
         int[] columnAndRow = getColumnAndRow(e, false);
         int x = columnAndRow[0] + 1;
         int y = columnAndRow[1] + 1;
-        if (pressed && button >= TerminalEmulator.MOUSE_WHEELUP_BUTTON && button <= TerminalEmulator.MOUSE_WHEELRIGHT_BUTTON) {
+        if (pressed && button >= TerminalEmulator.MOUSE_WHEELUP_BUTTON && button <= TerminalEmulator.MOUSE_WHEELDOWN_BUTTON) {
             if (mMouseStartDownTime == e.getDownTime()) {
                 x = mMouseScrollStartX;
                 y = mMouseScrollStartY;
@@ -647,6 +647,15 @@ public final class TerminalView extends View {
             return true;
         }
         return false;
+    }
+
+    /** Retire keyboard intent at the input boundary without changing stock gestures. */
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_CANCEL
+            || action == MotionEvent.ACTION_POINTER_DOWN) mKeyboardTap = mNoKeyboardTap;
+        return super.dispatchTouchEvent(event);
     }
 
     @SuppressLint("ClickableViewAccessibility")
