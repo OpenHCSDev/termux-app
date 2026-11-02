@@ -1,98 +1,23 @@
 package com.termux.view;
 
-import android.app.Activity;
-import android.app.Application;
-import android.os.Looper;
 import android.os.SystemClock;
 import android.view.InputDevice;
 import android.view.MotionEvent;
-import android.view.ViewConfiguration;
 
 import com.termux.shared.termux.settings.properties.TermuxPropertyConstants;
 import com.termux.shared.termux.settings.properties.TermuxSharedProperties;
-import com.termux.shared.termux.terminal.TermuxTerminalSessionClientBase;
-import com.termux.shared.termux.terminal.TermuxTerminalViewClientBase;
-import com.termux.terminal.TerminalEmulator;
-import com.termux.terminal.TerminalOutput;
 
-import org.junit.After;
-import org.junit.Before;
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.robolectric.Robolectric;
-import org.robolectric.RobolectricTestRunner;
-import org.robolectric.android.controller.ActivityController;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
-import org.robolectric.annotation.GraphicsMode;
-import org.robolectric.annotation.LooperMode;
-import org.robolectric.Shadows;
-
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.*;
 
-@RunWith(RobolectricTestRunner.class)
-@Config(sdk = 28, manifest = Config.NONE, application = Application.class)
-@GraphicsMode(GraphicsMode.Mode.NATIVE)
-@LooperMode(LooperMode.Mode.PAUSED)
-public class TerminalViewMouseTest {
-    private final RecordingOutput output = new RecordingOutput();
-    private final RecordingClient client = new RecordingClient();
-    private TerminalView view;
-    private ActivityController<Activity> activity;
-
-    @Before
-    public void setUp() {
-        activity = Robolectric.buildActivity(Activity.class).setup().visible();
-        view = new TerminalView(activity.get(), null);
-        activity.get().setContentView(view);
-        view.setTerminalViewClient(client);
-        view.setTextSize(16);
-        assertTrue("Gesture coordinates require real font width", view.mRenderer.mFontWidth > 0);
-        assertTrue("Gesture coordinates require real line spacing", view.mRenderer.mFontLineSpacing > 0);
-        view.mEmulator = new TerminalEmulator(output, 80, 24, 8, 16, null,
-            new TermuxTerminalSessionClientBase());
-        view.mGestureRecognizer.mListener.onDown(0, 0);
-    }
-
-    @After
-    public void tearDown() {
-        activity.pause().stop().destroy();
-    }
-
-    private void input(String text) {
-        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
-        view.mEmulator.append(bytes, bytes.length);
-    }
-
-    private MotionEvent event(long down, int action, float column, float row, int source) {
-        MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action,
-            column * view.mRenderer.mFontWidth,
-            view.mRenderer.mFontLineSpacingAndAscent + row * view.mRenderer.mFontLineSpacing, 0);
-        event.setSource(source);
-        return event;
-    }
+public class TerminalViewMouseTest extends TerminalViewTestCase {
 
     private void scroll(float columns, float rows) {
         MotionEvent event = event(1, MotionEvent.ACTION_MOVE, 2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
         view.mGestureRecognizer.mListener.onScroll(event,
             columns * view.mRenderer.mFontWidth, rows * view.mRenderer.mFontLineSpacing);
-        event.recycle();
-    }
-
-    private void longPress(int source) {
-        long down = SystemClock.uptimeMillis();
-        MotionEvent event = event(down, MotionEvent.ACTION_DOWN, 2.5f, 3.5f, source);
-        view.onTouchEvent(event);
-        event.recycle();
-        Shadows.shadowOf(Looper.getMainLooper()).idleFor(
-            ViewConfiguration.getTapTimeout() + ViewConfiguration.getLongPressTimeout() + 1,
-            TimeUnit.MILLISECONDS);
-        event = event(down, MotionEvent.ACTION_UP, 2.5f, 3.5f, source);
-        view.onTouchEvent(event);
         event.recycle();
     }
 
@@ -259,35 +184,4 @@ public class TerminalViewMouseTest {
             RuntimeEnvironment.getApplication(), key, "true"));
     }
 
-    private static final class RecordingClient extends TermuxTerminalViewClientBase {
-        int longPresses;
-        int taps;
-        boolean rightClickOnLongPress;
-        boolean handleLongPress = true;
-
-        @Override
-        public boolean shouldSendRightClickOnLongPress() { return rightClickOnLongPress; }
-
-        @Override
-        public boolean onLongPress(MotionEvent event) {
-            longPresses++;
-            return handleLongPress;
-        }
-
-        @Override
-        public void onSingleTapUp(MotionEvent event) {
-            taps++;
-        }
-    }
-
-    private static final class RecordingOutput extends TerminalOutput {
-        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        String text() { return new String(bytes.toByteArray(), StandardCharsets.UTF_8); }
-        @Override public void write(byte[] data, int offset, int count) { bytes.write(data, offset, count); }
-        @Override public void titleChanged(String oldTitle, String newTitle) { }
-        @Override public void onCopyTextToClipboard(String text) { }
-        @Override public void onPasteTextFromClipboard() { }
-        @Override public void onBell() { }
-        @Override public void onColorsChanged() { }
-    }
 }
