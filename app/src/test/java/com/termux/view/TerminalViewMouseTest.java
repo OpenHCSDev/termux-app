@@ -9,6 +9,9 @@ import com.termux.shared.termux.settings.properties.TermuxSharedProperties;
 
 import org.junit.Test;
 import org.robolectric.RuntimeEnvironment;
+import org.robolectric.shadows.ShadowSystemClock;
+
+import java.time.Duration;
 
 import static org.junit.Assert.*;
 
@@ -115,6 +118,16 @@ public class TerminalViewMouseTest extends TerminalViewTestCase {
 
     @Test
     public void tracked1002VerticalReleaseHasBoundedMomentum() { assertTrackedVerticalMomentum(1002); }
+
+    @Test
+    public void delayedDisplayFrameDropsTheSettledTail() {
+        input("\033[?1000h\033[?1006h");
+        fling(0, -20000);
+        ShadowSystemClock.advanceBy(Duration.ofMillis(TerminalView.MAX_MOUSE_FLING_MILLIS + 1));
+        advance(32);
+        assertTrue(view.mScroller.isFinished());
+        assertEquals("", output.text());
+    }
 
     @Test
     public void newDownStopsMomentumBeforeAnotherWheelReport() {

@@ -155,7 +155,7 @@ public final class TerminalView extends View {
             column = cell[0];
             row = cell[1];
             generation = mEmulator.getInputContextGeneration();
-            deadline = SystemClock.uptimeMillis() + MOUSE_TAP_KEYBOARD_TIMEOUT_MILLIS;
+            deadline = event.getEventTime() + MOUSE_TAP_KEYBOARD_TIMEOUT_MILLIS;
         }
 
         @Override void screenUpdated() {
@@ -217,6 +217,7 @@ public final class TerminalView extends View {
 
         abstract boolean tracksMouse();
         abstract void scrollTo(int position);
+        boolean expired() { return false; }
 
         @Override final void stop() {
             if (mFling != this) return;
@@ -230,7 +231,7 @@ public final class TerminalView extends View {
             if (mFling != this) return;
             if (mEmulator != emulator || emulator.getInputContextGeneration() != generation
                 || emulator.isMouseTrackingActive() != tracksMouse()
-                || isSelectingText() || mScroller.isFinished()) {
+                || isSelectingText() || expired() || mScroller.isFinished()) {
                 stop();
                 return;
             }
@@ -269,6 +270,9 @@ public final class TerminalView extends View {
                 Math.min(mScroller.getDuration(), MAX_MOUSE_FLING_MILLIS) - mScroller.timePassed()));
         }
         @Override boolean tracksMouse() { return true; }
+        @Override boolean expired() {
+            return SystemClock.uptimeMillis() - event.getEventTime() >= MAX_MOUSE_FLING_MILLIS;
+        }
         @Override void scrollTo(int pixels) {
             int current = (int) (pixels / cellSize);
             // At most one wheel report per display frame: no burst/backlog to flush

@@ -6,6 +6,9 @@ import android.view.MotionEvent;
 import android.view.ViewConfiguration;
 
 import org.junit.Test;
+import org.robolectric.shadows.ShadowSystemClock;
+
+import java.time.Duration;
 
 import static org.junit.Assert.assertEquals;
 
@@ -121,6 +124,18 @@ public class TerminalViewKeyboardTest extends TerminalViewTestCase {
         input("\033\\");
         view.onScreenUpdated();
         assertEquals(1, client.keyboardRequests);
+    }
+
+    @Test
+    public void delayedTapDeliveryDoesNotCreateFreshKeyboardIntent() {
+        input("\033[?1000h");
+        inputResponse();
+        MotionEvent up = event(SystemClock.uptimeMillis(), MotionEvent.ACTION_UP,
+            2.5f, 3.5f, InputDevice.SOURCE_TOUCHSCREEN);
+        ShadowSystemClock.advanceBy(Duration.ofMillis(TerminalView.MOUSE_TAP_KEYBOARD_TIMEOUT_MILLIS + 1));
+        view.mGestureRecognizer.mListener.onUp(up);
+        up.recycle();
+        assertEquals(0, client.keyboardRequests);
     }
 
     @Test
